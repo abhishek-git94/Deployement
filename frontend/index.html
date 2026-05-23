@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NexusAI Resume Parser</title>
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <div class="container">
+
+        <h1>NexusAI Resume Parser</h1>
+
+        <input type="file" id="resumeInput" accept=".pdf">
+
+        <button onclick="uploadResume()">
+            Parse Resume
+        </button>
+
+        <div id="loading">
+            Processing Resume...
+        </div>
+
+        <pre id="output"></pre>
+
+    </div>
+
+    <script src="script.js"></script>
+
+</body>
+
+</html>
