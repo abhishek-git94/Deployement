@@ -1,12 +1,17 @@
-from fastapi import FastAPI, HTTPException
+import os
+import io
+import json
+
+import openai
+import PyPDF2
+
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
-import base64
+
 
 app = FastAPI(
-    title="BFHL API",
-    description="API for processing data and files"
+    title="NexusAI Resume Parser API",
+    description="AI Powered Resume Parser Backend"
 )
 
 app.add_middleware(
@@ -17,167 +22,197 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class BFHLRequest(BaseModel):
-    data: List[str]
-    file_b64: Optional[str] = None
+
+# =========================
+# ENV VARIABLES
+# =========================
+
+API_KEY = os.getenv("API_KEY")
+BASE_URL = os.getenv("BASE_URL")
+
+if not API_KEY:
+    raise ValueError("API_KEY environment variable not found")
+
+if not BASE_URL:
+    raise ValueError("BASE_URL environment variable not found")
 
 
-def is_prime(n: int) -> bool:
+# =========================
+# OPENAI CLIENT
+# =========================
 
-    if n <= 1:
-        return False
-
-    if n <= 3:
-        return True
-
-    if n % 2 == 0 or n % 3 == 0:
-        return False
-
-    i = 5
-
-    while i * i <= n:
-
-        if n % i == 0 or n % (i + 2) == 0:
-            return False
-
-        i += 6
-
-    return True
+client = openai.OpenAI(
+    api_key=API_KEY,
+    base_url=BASE_URL
+)
 
 
-def parse_base64_file(file_b64: Optional[str]):
-
-    if not file_b64:
-        return False, None, None
-
-    try:
-
-        mime_type = None
-        base64_data = file_b64
-
-        if file_b64.startswith("data:") and ";base64," in file_b64:
-
-            header, base64_data = file_b64.split(";base64,", 1)
-
-            mime_type = header.split(":", 1)[1]
-
-        decoded_bytes = base64.b64decode(base64_data)
-
-        file_size_kb = len(decoded_bytes) / 1024.0
-
-        if not mime_type:
-
-            if decoded_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-                mime_type = "image/png"
-
-            elif decoded_bytes.startswith(b"\xff\xd8\xff"):
-                mime_type = "image/jpeg"
-
-            elif decoded_bytes.startswith(b"%PDF"):
-                mime_type = "doc/pdf"
-
-            elif decoded_bytes.startswith(b"GIF87a") or decoded_bytes.startswith(b"GIF89a"):
-                mime_type = "image/gif"
-
-            else:
-                mime_type = "application/octet-stream"
-
-        if mime_type == "application/pdf":
-            mime_type = "doc/pdf"
-
-        return True, mime_type, f"{file_size_kb:.0f}"
-
-    except Exception:
-        return False, None, None
-
+# =========================
+# ROOT ROUTE
+# =========================
 
 @app.get("/")
 def home():
+
     return {
-        "message": "BFHL API Running Successfully"
+        "message": "NexusAI Resume Parser Backend is Running"
     }
 
 
-@app.get("/bfhl")
-def get_operation_code():
+# =========================
+# RESUME PARSER API
+# =========================
 
-    return {
-        "operation_code": 1
-    }
-
-
-@app.post("/bfhl")
-def process_bfhl_data(request: BFHLRequest):
+@app.post("/api/parse")
+async def parse_resume(resume: UploadFile = File(...)):
 
     try:
 
-        data = request.data
-        file_b64 = request.file_b64
+        content = await resume.read()
 
-        numbers = []
-        alphabets = []
+        text = ""
 
-        for item in data:
+        # =========================
+        # PDF EXTRACTION
+        # =========================
 
-            item_str = str(item).strip()
+        if resume.filename.lower().endswith(".pdf"):
 
-            if not item_str:
-                continue
+            pdf_reader = PyPDF2.PdfReader(io.BytesIO(content))
 
-            if item_str.isdigit():
-                numbers.append(item_str)
+            for page in pdf_reader.pages:
 
-            elif item_str.isalpha() and len(item_str) == 1:
-                alphabets.append(item_str)
+                extracted = page.extract_text()
 
-        is_prime_found = False
+                if extracted:
+                    text += extracted + "\n"
 
-        for num_str in numbers:
+        else:
 
             try:
+                text = content.decode("utf-8")
 
-                num_val = int(num_str)
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Only PDF files are supported."
+                )
 
-                if is_prime(num_val):
-                    is_prime_found = True
-                    break
+        if not text.strip():
 
-            except ValueError:
-                pass
+            raise HTTPException(
+                status_code=400,
+                detail="Could not extract text from PDF."
+            )
 
-        lowercase_alphabets = [
-            char for char in alphabets if char.islower()
-        ]
+        # =========================
+        # SYSTEM PROMPT
+        # =========================
 
-        highest_lowercase_alphabet = []
+        system_prompt = """
+You are an expert AI resume parser.
 
-        if lowercase_alphabets:
-            highest_lowercase_alphabet = [max(lowercase_alphabets)]
+Extract information from the resume and return ONLY valid JSON.
 
-        file_valid, mime_type, file_size_kb = parse_base64_file(file_b64)
+Do not include markdown.
+Do not include explanations.
+Return raw JSON only.
 
-        response = {
-            "is_success": True,
-            "user_id": "abhishek_pal_30092004",
-            "email": "abc@gmail.com",
-            "roll_number": "0827AL231009",
-            "numbers": numbers,
-            "alphabets": alphabets,
-            "highest_lowercase_alphabet": highest_lowercase_alphabet,
-            "is_prime_found": is_prime_found,
-            "file_valid": file_valid
+JSON format:
+
+{
+  "personalInfo": {
+    "name": "",
+    "email": "",
+    "phone": "",
+    "location": "",
+    "linkedIn": ""
+  },
+  "summary": "",
+  "skills": [],
+  "experience": [
+    {
+      "title": "",
+      "company": "",
+      "duration": "",
+      "description": ""
+    }
+  ],
+  "education": [
+    {
+      "degree": "",
+      "institution": "",
+      "year": ""
+    }
+  ]
+}
+"""
+
+        # =========================
+        # LLM REQUEST
+        # =========================
+
+        response = client.chat.completions.create(
+            model="gemini-2.5-flash",
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ],
+            temperature=0
+        )
+
+        result_text = response.choices[0].message.content.strip()
+
+        # =========================
+        # CLEAN MARKDOWN
+        # =========================
+
+        if result_text.startswith("```json"):
+            result_text = result_text[7:]
+
+        if result_text.endswith("```"):
+            result_text = result_text[:-3]
+
+        parsed_data = json.loads(result_text.strip())
+
+        return {
+            "success": True,
+            "data": parsed_data
         }
 
-        if file_valid:
+    except json.JSONDecodeError:
 
-            response["file_mime_type"] = mime_type
-            response["file_size_kb"] = file_size_kb
-
-        return response
+        return {
+            "success": False,
+            "error": "Invalid JSON returned by model."
+        }
 
     except Exception as e:
 
         return {
-            "is_success": False,
+            "success": False,
             "error": str(e)
         }
+
+
+# =========================
+# MAIN
+# =========================
+
+if __name__ == "__main__":
+
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 10000))
+
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=port
+    )
